@@ -196,3 +196,97 @@ switch (_runtime.ServerRole)
         return true; // We return true to try again as the server role may change!
 }
 ```
+
+
+### Publishing in Recurring Tasks
+Because a recurring task does not have a webrequest associated to it, the `UmbracoContext` might not be build when your task accesses the `ContentService`. To solve this, you can ask the `UmbracoContextFactory` to make sure a context is available for your current scope.
+
+(Building on the first example, comments from first example removed to easily see whats changed)
+```csharp
+using Umbraco.Core;
+using Umbraco.Core.Composing;
+using Umbraco.Core.Logging;
+using Umbraco.Core.Services;
+using Umbraco.Web.Scheduling;
+
+namespace Umbraco.Web.UI
+{
+    public class CleanUpYourRoomComposer : ComponentComposer<CleanUpYourRoomComponent>
+    {
+    }
+
+    public class CleanUpYourRoomComponent : IComponent
+    {
+        private IProfilingLogger _logger;
+        private IRuntimeState _runtime;
+        private IContentService _contentService;
+        private BackgroundTaskRunner<IBackgroundTask> _cleanUpYourRoomRunner;
+        private readonly IUmbracoContextFactory _contextFactory; // field for the contextFactory
+
+        public CleanUpYourRoomComponent(IProfilingLogger logger, IRuntimeState runtime, IContentService contentService,
+            IUmbracoContextFactory contextFactory) // require a contextFactory
+        {
+            _logger = logger;
+            _runtime = runtime;
+            _contentService = contentService;
+            _cleanUpYourRoomRunner = new BackgroundTaskRunner<IBackgroundTask>("CleanYourRoom", _logger);
+            _contextFactory = contextFactory; // store the contextFactory Reference
+        }
+
+        public void Initialize()
+        {
+            int delayBeforeWeStart = 60000; // 60000ms = 1min
+            int howOftenWeRepeat = 300000; //300000ms = 5mins
+
+            //pass the contextFactory to the task
+            var task = new CleanRoom(_cleanUpYourRoomRunner, delayBeforeWeStart, howOftenWeRepeat, _runtime, _logger, _contentService, _contextFactory); 
+
+            _cleanUpYourRoomRunner.TryAdd(task);
+        }
+
+        public void Terminate()
+        {
+        }
+    }
+
+    public class CleanRoom : RecurringTaskBase
+    {
+        private IRuntimeState _runtime;
+        private IProfilingLogger _logger;
+        private IContentService _contentService;
+        private readonly IUmbracoContextFactory _contextFactory; // field for the contextFactory
+
+        public CleanRoom(IBackgroundTaskRunner<RecurringTaskBase> runner, int delayBeforeWeStart, int howOftenWeRepeat, IRuntimeState runtime, IProfilingLogger logger,
+            IContentService contentService,
+            IUmbracoContextFactory contextFactory) // require a contextFactory
+            : base(runner, delayBeforeWeStart, howOftenWeRepeat)
+        {
+            _runtime = runtime;
+            _logger = logger;
+            _contentService = contentService;
+            _contextFactory = contextFactory; // store the reference
+        }
+
+        public override bool PerformRun()
+        {
+            _contextFactory.EnsureUmbracoContext(); // make sure a context is available every time we run the task
+            
+            var numberOfThingsInBin = _contentService.CountChildren(Constants.System.RecycleBinContent);
+            _logger.Info<CleanRoom>("Go clean your room - {ServerRole}", _runtime.ServerRole);
+            _logger.Info<CleanRoom>("You have {NumberOfThingsInTheBin}", numberOfThingsInBin);
+
+            if (_contentService.RecycleBinSmells())
+            {
+                {
+                    _contentService.EmptyRecycleBin(userId: -1);
+                }
+            }
+            return true;
+        }
+
+        public override bool IsAsync => false;
+    }
+}
+
+```
+
